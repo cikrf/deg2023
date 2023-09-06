@@ -26,6 +26,8 @@ export const validate = async (contractId: string, dir: string, config: Validati
   const sum: BulletinsSum = {
     acc: [],
     valid: 0,
+    voted: new Set(),
+    revoted: []
   }
 
   const rollbackTxs: Record<string, number> = {}
@@ -135,9 +137,16 @@ export const validate = async (contractId: string, dir: string, config: Validati
 }
 
 async function validateAndSumVotersTxs(config: ValidationConfig, txsBuffer: Tx[], rollbackTxs: Record<string, number>, contractState: ContractState, mainKey: string, dimension: number[][], sum: BulletinsSum) {
+  txsBuffer.map((tx) => {
+    if (sum.voted.has(tx.senderPublicKey) && tx.operation === VotingOperation.vote) {
+      sum.revoted.push(tx.nestedTxId)
+    }
+
+    sum.voted.add(tx.senderPublicKey)
+  })
+
   const txs = txsBuffer.splice(0, chunkSize)
   const promises = txs.map(async (tx): Promise<ValidationResult> => {
-
     if (config.txSig) {
       if (!await validateTxSignature(tx)) {
         logError(`${tx.nestedTxId.padStart(44, ' ')}: Неверная подпись транзакции`)
@@ -189,6 +198,7 @@ async function validateAndSumVotersTxs(config: ValidationConfig, txsBuffer: Tx[]
   const result = await Promise.all(promises)
 
   const toSum = result
+    .filter((r) => !sum.revoted.includes(r.txId))
     .filter((r) => r.valid)
     .filter((r) => r.operation === VotingOperation.vote)
     .filter((r) => rollbackTxs[r.txId] ? !rollbackTxs[r.txId]-- : true)

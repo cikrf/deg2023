@@ -122,7 +122,7 @@ export enum DataType {
 
 export type ContractState = Record<string, any>
 
-export type BulletinsSum = { acc: SumAB, valid: number }
+export type BulletinsSum = { acc: SumAB, valid: number; revoted: string[], voted: Set<string> }
 
 export type ValidationConfig = {
   debug: boolean,

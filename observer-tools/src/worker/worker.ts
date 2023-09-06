@@ -11,8 +11,8 @@ import { decode } from '@wavesenterprise/rtk-encrypt/dist'
 import { createPoint } from '../utils/gost-utils'
 import { getTxBytes } from '../utils/get-tx-bytes'
 import { verify as verifySignatureRSA } from '../utils/rsa'
-import { verify as verifySignatureTeZhu } from '../utils/tezhu'
-import { validateDecryptionCryptoPro } from '../utils/hsm-utils'
+// import { verify as verifySignatureTeZhu } from '../utils/tezhu'
+import { validateBlindSignature as verifySignatureTeZhu, validateDecryptionCryptoPro } from '../utils/hsm-utils'
 
 export enum Methods {
   initContexts = 'initContexts',
@@ -322,9 +322,13 @@ const solveDLP = (Qs: Buffer[], n: number, callback: any) => {
 
 const validateBlindSignatureTeZhu = (contractState: ContractState, tx: Tx): boolean => {
   const blindSigParams = contractState.VOTING_BASE.blindSigParams[0].padStart(260, '0')
+
+  const signature = Buffer.alloc(128)
+  const signatureRaw = Buffer.from(tx.params.blindSig, 'base64')
+  signatureRaw.copy(signature, 128 - signatureRaw.length, 0, signatureRaw.length)
+
   const publicKey = Buffer.from(blindSigParams, 'hex')
-  const signature = Buffer.from(tx.params.blindSig, 'base64')
-  const message = Buffer.from(tx.senderPublicKey, 'utf-8')
+  const message = Buffer.from(tx.senderPublicKey)
 
   return verifySignatureTeZhu(publicKey, signature, message)
 }

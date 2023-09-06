@@ -65,6 +65,7 @@ const lib = ffi.Library(LIBRARY_PATH, {
       CryptDataBlobPtr,
     ],
   ],
+  VerifyBlindSignature: [ref.types.bool, [CryptDataBlobPtr, CryptDataBlobPtr, CryptDataBlobPtr]],
   GetLastError: [ref.types.uint32, []],
 })
 
@@ -112,13 +113,21 @@ export const mapSums = (data: ABBytes[]) => {
     ...Buffer.concat(content),
   ])
 }
-//
+
 export const validateDecryptionCryptoPro = (ctx: string, sums: ABBytes[], publicKey: string, decryption: Decryption[]) => {
   return lib.VerifyDecryptedPart(
     CBD(mapSums(sums)).ref(),
     CBD(mapPointToLE(createPoint(publicKey))).ref(),
     CBD(Buffer.from(ctx)).ref(),
     CBD(recoverDecryption(decryption)).ref(),
+  )
+}
+
+export const validateBlindSignature = (publicKey: Buffer, signature: Buffer, message: Buffer) => {
+  return lib.VerifyBlindSignature(
+    CBD(publicKey).ref(),
+    CBD(message).ref(),
+    CBD(signature).ref(),
   )
 }
 
