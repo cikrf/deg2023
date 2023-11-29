@@ -2,41 +2,25 @@ import { resolve } from 'path'
 import * as readline from 'readline'
 import * as fs from 'fs'
 import { parseLine } from './utils/parse-line'
-import { BulletinsSum, ContractState, SumAB, Tx, ValidationConfig, ValidationResult, VOTERS_TX_OPERATIONS, VotingOperation } from './types'
-import { execSync } from 'child_process'
+import { ContractState, STATE_TX_OPERATIONS, SumAB, Tx, ValidationConfig, VotingOperation } from './types'
 import { log, logError, logVerbose } from './utils/log-utils'
-import { isEqual } from 'lodash'
+import { getFiles } from './utils/get-files'
+import { chunk, isEqual } from 'lodash'
 import { addVotesChunk, calculateResults, chunkSize, validateBlindSignature, validateBulletin, validateDecryption, validateTxSignature } from './worker'
-import { progress } from './utils/progress'
 import { getContractState } from './utils/get-contract-state'
 import { decode } from '@wavesenterprise/rtk-encrypt/dist'
 import { getABs } from './utils/get-abs'
-import { getFiles } from './utils/get-files'
 
 export const validate = async (contractId: string, dir: string, config: ValidationConfig) => {
   const files = await getFiles(resolve(dir, `*.csv`))
 
   if (files.length === 0) {
     logError('Файлы с транзакциями указанного голосования не найдены')
-    process.exit(0)
+    return
   }
 
-  const stateTxs: Tx[] = []
-  const txsBuffer: Tx[] = []
-  const sum: BulletinsSum = {
-    acc: [],
-    valid: 0,
-    voted: new Set(),
-    revoted: []
-  }
-
-  const rollbackTxs: Record<string, number> = {}
-
-  let txNum = +execSync(`cat *.csv | wc -l`, { cwd: dir }).toString()
-  let curIdx = 0
-  let contractState: ContractState = {}
-
-  log('Проверка служебных транзакций и роллбеков...')
+  const buffer: Tx[] = []
+  log('Проверка подписей транзакций и учет роллбеков...')
   for (const filename of files) {
     const fileStream = fs.createReadStream(filename, {
       start: 0,
@@ -48,47 +32,39 @@ export const validate = async (contractId: string, dir: string, config: Validati
     for await (const line of rl) {
       const tx = parseLine(line, contractId)
       if (tx.rollback) {
-        if (rollbackTxs[tx.txId]) {
-          rollbackTxs[tx.txId]++
-        } else {
-          rollbackTxs[tx.txId] = 1
-        }
+        const idx = buffer.findIndex(({ txId }) => tx.txId === txId)
+        buffer.splice(idx, 1)
+        logVerbose(`${tx.txId.padStart(44, ' ')}: Транзакция удалена (роллбек)`)
+      } else {
+        buffer.push(tx)
       }
     }
     rl.close()
     fileStream.close()
   }
 
-  for (const filename of files) {
-    const fileStream = fs.createReadStream(filename, {
-      start: 0,
-    })
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    })
-    for await (const line of rl) {
-      const tx = parseLine(line, contractId)
-      if (tx.rollback) {
-        continue
-      }
-
-      if (!VOTERS_TX_OPERATIONS.includes(tx.operation)) {
-        if (!config.txSig) {
-          logVerbose(`${tx.nestedTxId.padStart(44, ' ')}: Пропуск проверки подписи транзакции`)
-          stateTxs.push(tx)
-        } else if (await validateTxSignature(tx)) {
-          logVerbose(`${tx.nestedTxId.padStart(44, ' ')}: Подпись транзакции корректна`)
-          stateTxs.push(tx)
-        } else {
-          logError(`${tx.nestedTxId.padStart(44, ' ')}: Неверная подпись транзакции`)
+  await Promise.all(chunk(buffer, chunkSize).map(async (txs) => {
+    if (config.txSig) {
+      await Promise.all(txs.map(async (tx) => {
+        try {
+          tx.valid = await validateTxSignature(tx)
+        } catch (e) {
+          logError(e)
+          tx.valid = false
         }
-      }
+        if (tx.valid) {
+          logVerbose(`${tx.txId.padStart(44, ' ')}: Подпись транзакции корректна`)
+        } else {
+          logError(`${tx.txId.padStart(44, ' ')}: Неверная подпись транзакции`)
+        }
+      }))
+    } else {
+      txs.map((tx) => tx.valid = true)
     }
-    contractState = getContractState(stateTxs)
-    rl.close()
-    fileStream.close()
-  }
+  }))
+
+  // Восстанавливаем стейт контракта
+  const contractState = getContractState(buffer.filter((tx) => tx.valid && STATE_TX_OPERATIONS.includes(tx.operation)))
 
   if (!contractState.MAIN_KEY) {
     logError('Ошибка валидации голосования: не найден главный ключ')
@@ -101,76 +77,21 @@ export const validate = async (contractId: string, dir: string, config: Validati
   const mainKey = contractState.MAIN_KEY
   const dimension = contractState.VOTING_BASE.dimension
 
-  log('Проверка бюллетеней...')
-  for (const filename of files) {
-    const fileStream = fs.createReadStream(filename, {
-      start: 0,
-    })
-    const rl = readline.createInterface({
-      input: fileStream,
-      crlfDelay: Infinity,
-    })
-    for await (const line of rl) {
-      const tx = parseLine(line, contractId)
-      curIdx++
-      if (tx.rollback) {
-        continue
-      }
+  log('Проверка на переголосования...')
+  const voted: Set<string> = new Set()
+  const unique = buffer
+    .filter((tx) => tx.valid)
+    .filter((tx) => tx.operation === VotingOperation.vote)
+    .filter((tx) => !voted.has(tx.senderPublicKey) ? voted.add(tx.senderPublicKey) : false)
 
-      if (VOTERS_TX_OPERATIONS.includes(tx.operation)) {
-        txsBuffer.push(tx)
-        if (txsBuffer.length > chunkSize) {
-          await validateAndSumVotersTxs(config, txsBuffer, rollbackTxs, contractState, mainKey, dimension, sum)
-        }
-      }
-      progress('Обработка транзакций', curIdx, txNum)
-    }
-    rl.close()
-    fileStream.close()
-  }
-  await validateAndSumVotersTxs(config, txsBuffer, rollbackTxs, contractState, mainKey, dimension, sum)
-
-  if (sum.valid) {
-    await checkSum(config, sum.acc as SumAB, contractState, sum.valid)
-  }
-
-}
-
-async function validateAndSumVotersTxs(config: ValidationConfig, txsBuffer: Tx[], rollbackTxs: Record<string, number>, contractState: ContractState, mainKey: string, dimension: number[][], sum: BulletinsSum) {
-  txsBuffer.map((tx) => {
-    if (sum.voted.has(tx.senderPublicKey) && tx.operation === VotingOperation.vote) {
-      sum.revoted.push(tx.nestedTxId)
-    }
-
-    sum.voted.add(tx.senderPublicKey)
-  })
-
-  const txs = txsBuffer.splice(0, chunkSize)
-  const promises = txs.map(async (tx): Promise<ValidationResult> => {
-    if (config.txSig) {
-      if (!await validateTxSignature(tx)) {
-        logError(`${tx.nestedTxId.padStart(44, ' ')}: Неверная подпись транзакции`)
-        return {
-          txId: tx.nestedTxId,
-          operation: tx.operation,
-          valid: false,
-        }
-      } else {
-        logVerbose(`${tx.nestedTxId.padStart(44, ' ')}: Подпись транзакции корректна`)
-      }
-    }
-
-    if (tx.operation === VotingOperation.vote) {
+  const validVotes = (await Promise.all(chunk(unique, chunkSize).map(async (txs) => {
+    const validChunkVotes = await Promise.all(txs.filter(async (tx) => {
       if (config.blindSig) {
         if (!await validateBlindSignature(contractState, tx)) {
-          logError(`${tx.nestedTxId.padStart(44, ' ')}: Слепая подпись не прошла проверку`)
-          return {
-            txId: tx.nestedTxId,
-            operation: tx.operation,
-            valid: false,
-          }
+          logError(`${tx.txId.padStart(44, ' ')}: Слепая подпись не прошла проверку`)
+          return false
         } else {
-          logVerbose(`${tx.nestedTxId.padStart(44, ' ')}: Слепая подпись корректна`)
+          logVerbose(`${tx.txId.padStart(44, ' ')}: Слепая подпись корректна`)
         }
       }
 
@@ -178,44 +99,30 @@ async function validateAndSumVotersTxs(config: ValidationConfig, txsBuffer: Tx[]
         const res = await validateBulletin(tx, mainKey, dimension)
         if (!res.valid) {
           logError(`${res.txId.padStart(44, ' ')}: Некорректный ZKP`)
+          return false
         } else {
           logVerbose(`${res.txId.padStart(44, ' ')}: Проверка ZKP успешна`)
         }
-        return {
-          ...res,
-          operation: tx.operation,
-        }
       }
-    }
+      return true
+    }))
 
-    return {
-      txId: tx.nestedTxId,
-      operation: tx.operation,
-      valid: true,
-    }
-  })
+    return validChunkVotes
+      .map((tx) => Buffer.from(tx.params.vote, 'base64'))
+      .map((b) => decode(b))
+      .map((b) => getABs(b))
 
-  const result = await Promise.all(promises)
+  }))).flat()
 
-  const toSum = result
-    .filter((r) => !sum.revoted.includes(r.txId))
-    .filter((r) => r.valid)
-    .filter((r) => r.operation === VotingOperation.vote)
-    .filter((r) => rollbackTxs[r.txId] ? !rollbackTxs[r.txId]-- : true)
-    .map((r) => txs.find((t) => t.nestedTxId === r.txId)!)
-    .map((b) => Buffer.from(b.params.vote, 'base64'))
-    .map((b) => decode(b))
-    .map((b) => getABs(b))
-
-  if (toSum.length) {
-    sum.valid += toSum.length
-
-    if (sum.acc.length) {
-      toSum.push(sum.acc)
-    }
-    sum.acc = await addVotesChunk(toSum as SumAB[], dimension.map(((d: any) => d[2])))
+  const totalVotes = validVotes.length
+  while (validVotes.length > 1) {
+    const sumChunk = validVotes.splice(0, chunkSize)
+    const sum = await addVotesChunk(sumChunk, dimension.map(((d: any) => d[2])))
+    validVotes.push(sum)
   }
-
+  if (validVotes.length) {
+    await checkSum(config, validVotes[0], contractState, totalVotes)
+  }
 }
 
 async function checkSum(config: ValidationConfig, sumABs: SumAB, contractState: ContractState, validNum: number) {

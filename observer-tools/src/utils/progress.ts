@@ -4,6 +4,6 @@ export const progress = (action: string, n: number, total: number, precision = 2
     process.stdout.write(`${action} ${percent}% завершено... \r`)
     process.stdout.write(`\n`)
   } else {
-    process.stdout.write(`  ${action} ${percent}% завершено... \r`)
+    process.stdout.write(`  ${action} ${percent}% завершено... (${n}/${total})\r`)
   }
 }

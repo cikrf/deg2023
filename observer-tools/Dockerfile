@@ -4,8 +4,6 @@ RUN apt update && apt install build-essential python libssl-dev openssl lsb-base
 COPY package.json .
 COPY package-lock.json .
 RUN npm ci -q
-COPY .git .
-RUN git log --pretty=format:"%H - %s" -1 > version.txt
 
 FROM deps as cryptolib
 COPY linux-amd64_deb.tgz /app/
@@ -36,7 +34,6 @@ ENV LD_LIBRARY_PATH=/opt/cprocsp/lib/amd64
 WORKDIR /app
 COPY --from=build /app/node_modules /app/node_modules
 COPY --from=build /app/dist /app/dist
-COPY --from=deps /app/version.txt /app/version.txt
 COPY --from=cryptolib /app/lib /app/lib
 COPY --from=cryptolib /opt/cprocsp/ /opt/cprocsp/
 COPY --from=cryptolib /app/linux-amd64_deb.tgz /app/linux-amd64_deb.tgz

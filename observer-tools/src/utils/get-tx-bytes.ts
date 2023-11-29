@@ -65,7 +65,9 @@ export const getTxBytes = (tx: Tx): Buffer => {
       if (tx.version >= 3) {
         data.push(...atomicBadge)
       }
-      data.push(0, ...intToBytes(1), ...intToBytes(2))
+      if (tx.version >= 4) {
+        data.push(0, ...intToBytes(1), ...intToBytes(2))
+      }
       bytes = Buffer.from(data)
       break
     case 104:

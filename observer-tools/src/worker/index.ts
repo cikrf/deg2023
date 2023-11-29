@@ -2,16 +2,15 @@ import * as Farm from 'worker-farm'
 import { Methods } from './worker'
 import { ContractState, Decryption, DLPResult, SumAB, Tx, ValidationResult } from '../types'
 import { chunk, isEqual } from 'lodash'
-import { BASE, BASE_COMPRESSED, createPoint, mapPointToLE } from '../utils/gost-utils'
+import { createPoint } from '../utils/gost-utils'
 import { fromHex, hashPoints } from '../utils/utils'
 import * as BN from 'bn.js'
 import { logVerbose } from '../utils/log-utils'
 import * as os from 'os'
-import { DEGHash } from '../utils/deg-hash'
-import * as console from 'console'
 
+const maxConcurrentCallsPerWorker = 3
 export const threadsNum = os.cpus().length
-export const chunkSize = threadsNum * 4
+export const chunkSize = threadsNum * maxConcurrentCallsPerWorker
 
 export const farm = Farm({
   workerOptions: {
@@ -20,7 +19,7 @@ export const farm = Farm({
   autoStart: true,
   maxConcurrentCallsPerWorker: 3,
   maxConcurrentWorkers: threadsNum,
-  maxRetries: 3,
+  maxRetries: 1,
 }, require.resolve('./worker'), [
   Methods.addVotesChunk,
   Methods.validateBulletin,
@@ -36,19 +35,6 @@ export const terminateWorkers = () => {
   logVerbose('Завершение работы')
   Farm.end(farm)
 }
-
-// @todo
-// const promisifyWorkerCall = <T>(name: Methods) => {
-//   return (...args: any) => new Promise((resolve, reject) => {
-//     farm[name](...args, (result: Error | T) => {
-//       if (result instanceof Error) {
-//         reject(result)
-//       } else {
-//         resolve(result)
-//       }
-//     })
-//   })
-// }
 
 export const addVotesChunk = async (ABs: SumAB[], dimension: number[]): Promise<SumAB> => {
   const batches = chunk(ABs, Math.ceil(ABs.length / threadsNum))
@@ -80,10 +66,11 @@ export const validateBlindSignature = async (contractState: ContractState, tx: T
   })
 }
 
-export const validateTxSignature = async (tx: Tx) => {
+export const validateTxSignature = async (tx: Tx): Promise<boolean> => {
   return new Promise((resolve, reject) => {
     farm[Methods.validateTxSignature](tx, (result: Error | boolean) => {
       if (result instanceof Error) {
+        console.log('123123123123123123')
         reject(result)
       } else {
         resolve(result)
@@ -112,28 +99,6 @@ export const validateDLEq = async (
   })
 }
 
-export const validateDecryptionOld = async (sums: SumAB, dimension: number[], publicKey: Buffer, decryption: Decryption[][]): Promise<void> => {
-  const promises = dimension.map(async (options, qIdx) => {
-    const promises = Array(options).fill(0).map((_, oIdx) => {
-      const { P, w, U1, U2 } = decryption![qIdx][oIdx]
-      return validateDLEq(
-        Buffer.from(w, 'hex'),
-        Buffer.from(U1, 'hex'),
-        Buffer.from(U2, 'hex'),
-        Buffer.from(BASE_COMPRESSED, 'hex'),
-        publicKey,
-        sums[qIdx][oIdx].A,
-        Buffer.from(P, 'hex'),
-      )
-    })
-    const results = await Promise.all(promises)
-    return results.every(Boolean)
-  })
-  const results = await Promise.all(promises)
-  if (!results.every(Boolean)) {
-    throw new Error('Decryption is not valid')
-  }
-}
 export const validateDecryption = async (ctx: string, sums: SumAB, dimension: number[], publicKey: Buffer, decryption: Decryption[][]): Promise<void> => {
   const promises = dimension.map(async (_options, qIdx) => {
     return new Promise((resolve, reject) => {
@@ -145,54 +110,6 @@ export const validateDecryption = async (ctx: string, sums: SumAB, dimension: nu
         }
       })
     })
-  })
-  const results = await Promise.all(promises)
-  if (!results.every(Boolean)) {
-    throw new Error('Decryption is not valid')
-  }
-}
-
-export const validateDecryptionJS = async (ctx: string, sums: SumAB, dimension: number[], publicKey: Buffer, decryption: Decryption[][]): Promise<void> => {
-  const promises = dimension.map(async (options, qIdx) => {
-    const promises = Array(options).fill(0).map((_, oIdx) => {
-      const { P, w: wHex, U1: U1Compact, U2: U2Compact } = decryption![qIdx][oIdx]
-
-      const Y1 = createPoint(P)
-      const G1 = createPoint(sums[qIdx][oIdx].A)
-      const Y2 = createPoint(publicKey)
-      const G2 = createPoint(BASE)
-
-      const U1 = createPoint(U1Compact)
-      const U2 = createPoint(U2Compact)
-
-      const message = Buffer.from([
-        ...Buffer.from(ctx, 'utf-8'),
-        ...mapPointToLE(U1),
-        ...mapPointToLE(U2),
-        ...mapPointToLE(G1),
-        ...mapPointToLE(Y1),
-        ...mapPointToLE(G2),
-        ...mapPointToLE(Y2),
-      ])
-
-      try {
-        const v = DEGHash.hash(message)
-
-        const w = Buffer.from(wHex, 'hex')
-        const a1 = G1.mul(new BN(w))
-        const a2 = Y1.mul(new BN(v)).add(U1)
-        const b1 = G2.mul(new BN(w))
-        const b2 = Y2.mul(new BN(v)).add(U2)
-        return a1.eq(a2) && b1.eq(b2)
-      } catch (e) {
-        console.error(e)
-        throw e
-      }
-    })
-    const results = await Promise.all(promises)
-    console.log(results)
-
-    return results.every(Boolean)
   })
   const results = await Promise.all(promises)
   if (!results.every(Boolean)) {
@@ -220,7 +137,6 @@ export const calculateResults = async (
 
       const C = P1.add(P2)
 
-      // @todo check
       if (C.eq(createPoint(sums[qIdx][oIdx].B))) {
         return 0
       } else {
@@ -275,7 +191,7 @@ export const validateBulletin = async (vote: Tx, mainKey: string, dimension: num
     })
   })
   return {
-    txId: vote.nestedTxId,
+    txId: vote.txId,
     valid: result.valid,
   }
 

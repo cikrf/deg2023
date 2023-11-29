@@ -34,7 +34,7 @@ export enum VotingOperation {
 }
 
 export type Tx = {
-  nestedTxId: string,
+  txId: string,
   type: number,
   signature: string,
   version: number,
@@ -48,7 +48,8 @@ export type Tx = {
   operation: VotingOperation
   extra: any,
   contractId: string
-  rollback: false
+  rollback: boolean
+  valid: boolean
 }
 
 export type Rollback = {
@@ -122,7 +123,7 @@ export enum DataType {
 
 export type ContractState = Record<string, any>
 
-export type BulletinsSum = { acc: SumAB, valid: number; revoted: string[], voted: Set<string> }
+export type BulletinsSum = { acc: SumAB, valid: number; }
 
 export type ValidationConfig = {
   debug: boolean,
