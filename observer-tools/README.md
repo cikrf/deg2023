@@ -51,13 +51,20 @@ voted_for_1, voted_for_2, ... , voted_for_M
 
 ## Установка
 
-- Установите [https://www.docker.com/](Docker)
-- Склонируйте этот репозиторий
+- Установите [https://www.docker.com/products/docker-desktop/](Docker)
+- Склонируйте этот репозиторий с утилитой наблюдателя (observer-tool)
 - Перейдите в корневую директорию утилиты
-- Скачайте пакет [КриптоПро CSP 5.0 для Linux (x64, deb)](https://www.cryptopro.ru/products/csp/downloads#latest_csp50r3_linux) и положите файл ```linux-amd64_deb.tgz``` в корневую директорию
-- Соберите docker-образ, выполнив команду:<br>```docker build  -t observer-tool -f Dockerfile .```
+- Скачайте пакет [КриптоПро CSP 5.0 для Linux (x64, deb) - Astra Linux](https://www.cryptopro.ru/products/csp/downloads#latest_csp50r3_linux) и положите файл ```linux-amd64_deb.tgz``` в корневую директорию утилиты наблюдателя
+- Очистите cache перед следующим шагом командой <br> ```docker builder prune -a```
+- Соберите docker-образ, выполнив команду (точка в конце строки является частью команды):
+<br> для Intel/AMD: ```docker build  -t observer-tool -f Dockerfile .```
+<br> для M1: ```docker build --platform linux/x86_64 -t observer-tool -f Dockerfile .```
+
 
 ## Запуск
 Для увеличения производительности проверки, увеличьте количество используемых ядер в Docker.
-- Проверка транзакций голосования. Перейдите в каталог с zip-архивами транзакций голосований и выполните команду:<br>```docker run --rm -t -i --mount type=bind,source="$(pwd)",target=/app/files,readonly observer-tool run validate [contractId]```
+- Проверка транзакций голосования. Перейдите в каталог с zip-архивами транзакций голосований и выполните команду:
+<br> для Intel/AMD: ```docker run --rm -t -i --mount type=bind,source="$(pwd)",target=/app/files,readonly observer-tool run validate [contractId]```
+<br> для M1: ```docker run --rm -t -i --platform linux/x86_64 --mount type=bind,source="$(pwd)",target=/app/files,readonly observer-tool run validate [contractId]```
+[contractId] - указать id  контракта, если требуется проверить определенный контракт, иначе параметр указывать не надо.
 - Для остановки проверки нажмите ```CTRL+C```
